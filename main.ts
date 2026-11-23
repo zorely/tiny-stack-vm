@@ -6,8 +6,13 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// [immediate bytes, values popped, values pushed] for each opcode byte.
-const META: ([number, number, number] | undefined)[] = [];
+// Per-opcode metadata in flat tables, so the hot loop reads three bytes
+// instead of chasing an inner array per instruction: immediate bytes,
+// values popped, values pushed, plus a validity flag for the bad-opcode trap.
+const IMM = new Uint8Array(256);
+const POPS = new Uint8Array(256);
+const PUSHES = new Uint8Array(256);
+const VALID = new Uint8Array(256);
 for (const [b, im, po, pu] of [
   [0x00, 0, 0, 0], [0x01, 1, 0, 1], [0x02, 4, 0, 1],
   [0x03, 0, 1, 0], [0x04, 0, 1, 2], [0x05, 0, 2, 2],
@@ -22,7 +27,7 @@ for (const [b, im, po, pu] of [
   [0x33, 2, 0, 0], [0x34, 0, 0, 0],
   [0x40, 0, 1, 1], [0x41, 0, 2, 0],
   [0x50, 0, 1, 0], [0x51, 0, 1, 0], [0x52, 0, 0, 1], [0x53, 0, 1, 0],
-]) META[b] = [im, po, pu];
+]) { IMM[b] = im; POPS[b] = po; PUSHES[b] = pu; VALID[b] = 1; }
 
 const STACK_MAX = 256;
 const CALLS_MAX = 64;
@@ -41,9 +46,8 @@ function run(prog: Uint8Array, input: Uint8Array): { out: Uint8Array; code: numb
     if (steps === STEP_LIMIT) return done(10);
     if (pc < 0 || pc >= prog.length) return done(9);
     const op = prog[pc];
-    const meta = META[op];
-    if (!meta) return done(5);
-    const [imm, pops, pushes] = meta;
+    if (!VALID[op]) return done(5);
+    const imm = IMM[op], pops = POPS[op], pushes = PUSHES[op];
     if (pc + imm >= prog.length) return done(9);
     steps++;
     const next = pc + 1 + imm;
